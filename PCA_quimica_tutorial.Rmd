@@ -1,0 +1,864 @@
+---
+title: "Análisis de Componentes Principales (PCA) con aplicaciones químicas"
+subtitle: "Tutorial teórico-práctico en lenguaje R · Quimiometría"
+author: "Dr. Pedro González — Escuela de Química, Universidad Autónoma de Chiriquí"
+date: "`r meses <- c('enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'); paste(as.integer(format(Sys.Date(), '%d')), 'de', meses[as.integer(format(Sys.Date(), '%m'))], 'de', format(Sys.Date(), '%Y'))`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    df_print: kable
+    fig_caption: true
+lang: es
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.align = "center", fig.width = 7.5, fig.height = 4.8, dpi = 110,
+  comment = "#>"
+)
+options(digits = 4, scipen = 6)
+set.seed(2026)
+```
+
+<style>
+.caja { border-left: 5px solid #18bc9c; background: #f4fbf9; padding: 10px 16px; margin: 14px 0; border-radius: 4px; }
+.alerta { border-left: 5px solid #e74c3c; background: #fdf3f2; padding: 10px 16px; margin: 14px 0; border-radius: 4px; }
+.problema { border: 1px solid #2c3e50; border-radius: 6px; padding: 12px 18px; margin: 18px 0; background: #fafbfc; }
+</style>
+
+# Presentación
+
+El **Análisis de Componentes Principales** (PCA, *Principal Component Analysis*) es la técnica de base de la quimiometría. Casi todos los métodos multivariados que se usan en química analítica (PCR, PLS, SIMCA, MCR-ALS, control estadístico multivariado de procesos) se apoyan en sus ideas o lo utilizan como paso previo. Este tutorial cubre:
+
+1. Los fundamentos teóricos y matemáticos del PCA (formulación como problema de optimización, descomposición espectral y en valores singulares, diagnóstico estadístico).
+2. Cuándo se aplica, qué supuestos requiere y cuáles son sus limitaciones.
+3. Dos ejemplos resueltos con datos químicos reales y publicados:
+   - **Ejemplo 1:** composición química de 178 vinos italianos (13 constituyentes; Forina *et al.*).
+   - **Ejemplo 2:** espectros de infrarrojo cercano (NIR) de 60 gasolinas (Kalivas, 1997).
+4. Un **taller de cinco problemas** para que el estudiante los resuelva.
+
+**Objetivos de aprendizaje.** Al finalizar, el estudiante podrá: (i) deducir el PCA como problema de maximización de varianza con restricción; (ii) calcular el PCA desde cero mediante `eigen()` y `svd()` y verificarlo con `prcomp()`; (iii) elegir el preprocesamiento (centrado, autoescalado, SNV) según la naturaleza de los datos; (iv) decidir el número de componentes con criterios explícitos; (v) interpretar *scores*, *loadings* y biplots en términos químicos; (vi) detectar muestras anómalas con $T^2$ de Hotelling y residuales $Q$; y (vii) reconocer cuándo el PCA **no** es la herramienta adecuada.
+
+## Paquetes requeridos
+
+```{r paquetes}
+# install.packages(c("ggplot2", "FactoMineR", "factoextra", "corrplot",
+#                    "gclus", "pls", "dslabs", "MASS", "ggrepel"))
+library(ggplot2)     # gráficos
+library(FactoMineR)  # PCA con indicadores de calidad (cos2, contribuciones)
+library(factoextra)  # visualización de resultados de PCA
+library(corrplot)    # matrices de correlación
+library(ggrepel)     # etiquetas sin solapamiento
+theme_set(theme_bw(base_size = 12))
+```
+
+---
+
+# Fundamentos teóricos
+
+## Idea geométrica
+
+Supongamos $n$ muestras en las que se miden $p$ variables (concentraciones, absorbancias, propiedades fisicoquímicas). Cada muestra es un punto en un espacio de $p$ dimensiones. En los datos químicos las variables suelen estar **fuertemente correlacionadas**: la absorbancia a 1 210 nm se parece mucho a la de 1 212 nm; el contenido de flavonoides acompaña al de fenoles totales. Esto significa que la nube de puntos no ocupa todo el espacio, sino que se concentra cerca de un subespacio de dimensión mucho menor.
+
+El PCA encuentra un **nuevo sistema de ejes ortogonales** (las componentes principales, CP) mediante una rotación rígida del sistema original, de modo que:
+
+* la primera CP apunta en la dirección de **máxima varianza** de los datos;
+* la segunda CP es ortogonal a la primera y recoge la máxima varianza restante, y así sucesivamente.
+
+Si las primeras $A \ll p$ componentes recogen casi toda la varianza, podemos describir las muestras con $A$ coordenadas (los *scores*) en lugar de $p$, sin pérdida apreciable de información. Pearson (1901) lo planteó como el ajuste del plano más cercano a una nube de puntos; Hotelling (1933) lo formuló como el problema de varianza máxima que se usa hoy.
+
+```{r geometria, fig.cap="Figura 1. PCA en dos dimensiones: los nuevos ejes (flechas) se orientan según la varianza de la nube de puntos.", fig.width=6, fig.height=5}
+n  <- 150
+x1 <- rnorm(n, 0, 2)
+x2 <- 0.8 * x1 + rnorm(n, 0, 0.7)
+D  <- data.frame(x1 = x1 - mean(x1), x2 = x2 - mean(x2))
+pc <- prcomp(D)
+V  <- pc$rotation; s <- pc$sdev
+ejes <- data.frame(xend = 2 * s * V[1, ], yend = 2 * s * V[2, ],
+                   lab = c("CP1", "CP2"))
+ggplot(D, aes(x1, x2)) +
+  geom_point(alpha = 0.5, colour = "grey30") +
+  geom_segment(data = ejes, aes(x = 0, y = 0, xend = xend, yend = yend, colour = lab),
+               linewidth = 1.3, arrow = arrow(length = unit(0.25, "cm"))) +
+  geom_text(data = ejes, aes(x = 1.15 * xend, y = 1.15 * yend, label = lab, colour = lab),
+            fontface = "bold", show.legend = FALSE) +
+  coord_equal() + labs(colour = NULL, x = "Variable 1 (centrada)", y = "Variable 2 (centrada)")
+```
+
+## Notación
+
+| Símbolo | Significado | Dimensión |
+|---|---|---|
+| $\mathbf{X}$ | matriz de datos (filas = muestras, columnas = variables) | $n \times p$ |
+| $\bar{\mathbf{x}}$ | vector de medias por columna | $p$ |
+| $\mathbf{X}_c$ | datos centrados: $\mathbf{X}_c = \mathbf{X} - \mathbf{1}\bar{\mathbf{x}}^\top$ | $n \times p$ |
+| $\mathbf{S}$ | matriz de covarianzas: $\mathbf{S} = \frac{1}{n-1}\mathbf{X}_c^\top\mathbf{X}_c$ | $p \times p$ |
+| $\mathbf{P}$ | matriz de **cargas** (*loadings*), columnas $\mathbf{p}_a$ | $p \times A$ |
+| $\mathbf{T}$ | matriz de **puntuaciones** (*scores*), columnas $\mathbf{t}_a$ | $n \times A$ |
+| $\lambda_a$ | varianza de la componente $a$ (autovalor) | escalar |
+| $\mathbf{E}$ | matriz de residuales | $n \times p$ |
+
+## El PCA como problema de optimización
+
+Buscamos un vector unitario $\mathbf{p}_1 \in \mathbb{R}^p$ tal que la proyección de las muestras sobre él, $\mathbf{t}_1 = \mathbf{X}_c\mathbf{p}_1$, tenga **varianza máxima**:
+
+$$
+\max_{\mathbf{p}_1} \; \operatorname{Var}(\mathbf{t}_1) = \frac{1}{n-1}\mathbf{p}_1^\top \mathbf{X}_c^\top \mathbf{X}_c\, \mathbf{p}_1 = \mathbf{p}_1^\top \mathbf{S}\, \mathbf{p}_1
+\qquad \text{sujeto a} \qquad \mathbf{p}_1^\top\mathbf{p}_1 = 1 .
+$$
+
+La restricción es necesaria porque, sin ella, la varianza crecería sin límite al multiplicar $\mathbf{p}_1$ por una constante. Con un multiplicador de Lagrange $\lambda$:
+
+$$
+\mathcal{L}(\mathbf{p}_1,\lambda) = \mathbf{p}_1^\top\mathbf{S}\,\mathbf{p}_1 - \lambda\,(\mathbf{p}_1^\top\mathbf{p}_1 - 1),
+\qquad
+\frac{\partial \mathcal{L}}{\partial \mathbf{p}_1} = 2\mathbf{S}\mathbf{p}_1 - 2\lambda\mathbf{p}_1 = \mathbf{0}
+\;\;\Longrightarrow\;\;
+\boxed{\mathbf{S}\,\mathbf{p}_1 = \lambda\,\mathbf{p}_1}
+$$
+
+Es decir, $\mathbf{p}_1$ debe ser un **autovector** de $\mathbf{S}$. Multiplicando por $\mathbf{p}_1^\top$ a la izquierda: $\operatorname{Var}(\mathbf{t}_1) = \mathbf{p}_1^\top\mathbf{S}\mathbf{p}_1 = \lambda$. Para maximizar la varianza se elige el autovector asociado al **mayor autovalor** $\lambda_1$.
+
+La segunda componente se obtiene maximizando $\mathbf{p}_2^\top\mathbf{S}\mathbf{p}_2$ con las restricciones $\mathbf{p}_2^\top\mathbf{p}_2 = 1$ y $\mathbf{p}_2^\top\mathbf{p}_1 = 0$; el resultado es el autovector del segundo autovalor $\lambda_2$, y así sucesivamente. Como $\mathbf{S}$ es simétrica y semidefinida positiva, el **teorema espectral** garantiza que:
+
+$$
+\mathbf{S} = \mathbf{P}\,\boldsymbol{\Lambda}\,\mathbf{P}^\top,\qquad
+\mathbf{P}^\top\mathbf{P} = \mathbf{I},\qquad
+\boldsymbol{\Lambda} = \operatorname{diag}(\lambda_1 \ge \lambda_2 \ge \dots \ge \lambda_p \ge 0).
+$$
+
+**Propiedades fundamentales:**
+
+1. Las cargas son ortonormales: $\mathbf{p}_a^\top\mathbf{p}_b = \delta_{ab}$.
+2. Los scores son no correlacionados: $\operatorname{Cov}(\mathbf{t}_a, \mathbf{t}_b) = \lambda_a\,\delta_{ab}$.
+3. La varianza total se conserva: $\sum_{j=1}^{p} s_j^2 = \operatorname{tr}(\mathbf{S}) = \sum_{a=1}^{p} \lambda_a$.
+4. Proporción de varianza explicada por la componente $a$ y acumulada hasta $A$:
+$$
+\pi_a = \frac{\lambda_a}{\sum_{k=1}^{p}\lambda_k}, \qquad
+\Pi_A = \frac{\sum_{a=1}^{A}\lambda_a}{\sum_{k=1}^{p}\lambda_k}.
+$$
+5. El número máximo de componentes con varianza no nula es $\operatorname{rango}(\mathbf{X}_c) \le \min(n-1,\,p)$.
+
+## Descomposición en valores singulares (SVD)
+
+En la práctica numérica no se diagonaliza $\mathbf{S}$ (formar $\mathbf{X}^\top\mathbf{X}$ eleva al cuadrado el número de condición y pierde precisión), sino que se calcula la SVD de la matriz centrada:
+
+$$
+\mathbf{X}_c = \mathbf{U}\,\boldsymbol{\Sigma}\,\mathbf{V}^\top,
+\qquad \mathbf{U}^\top\mathbf{U} = \mathbf{I},\; \mathbf{V}^\top\mathbf{V} = \mathbf{I},\;
+\boldsymbol{\Sigma} = \operatorname{diag}(\sigma_1 \ge \sigma_2 \ge \dots \ge 0).
+$$
+
+Sustituyendo en $\mathbf{S}$: $\mathbf{S} = \frac{1}{n-1}\mathbf{V}\boldsymbol{\Sigma}^2\mathbf{V}^\top$, de donde se obtienen las equivalencias:
+
+$$
+\mathbf{P} = \mathbf{V}, \qquad
+\mathbf{T} = \mathbf{X}_c\mathbf{P} = \mathbf{U}\boldsymbol{\Sigma}, \qquad
+\lambda_a = \frac{\sigma_a^2}{n-1}.
+$$
+
+La función `prcomp()` de R usa la SVD (por eso se recomienda frente a `princomp()`, que diagonaliza la matriz de covarianzas con divisor $n$ y exige $n > p$).
+
+## Modelo bilineal, reconstrucción y residuales
+
+Al retener $A$ componentes, la matriz de datos se descompone en una parte estructurada y un residual:
+
+$$
+\mathbf{X}_c = \mathbf{T}_A\mathbf{P}_A^\top + \mathbf{E}_A
+= \sum_{a=1}^{A} \mathbf{t}_a\mathbf{p}_a^\top + \mathbf{E}_A .
+$$
+
+Por el **teorema de Eckart–Young** (1936), $\hat{\mathbf{X}}_A = \mathbf{T}_A\mathbf{P}_A^\top$ es la mejor aproximación de rango $A$ de $\mathbf{X}_c$ en el sentido de mínimos cuadrados: minimiza $\lVert \mathbf{X}_c - \hat{\mathbf{X}} \rVert_F^2$ entre todas las matrices de rango $A$, y el error mínimo es $\sum_{a>A}\sigma_a^2$. Esta es la base del uso del PCA para **compresión y filtrado de ruido** de espectros.
+
+En química, el modelo bilineal tiene una lectura física directa: la ley de Beer–Lambert para mezclas, $\mathbf{X} = \mathbf{C}\,\mathbf{S}_{\text{esp}}^\top + \mathbf{E}$ (concentraciones × espectros puros), es también bilineal. Por ello el **rango químico** de una matriz de espectros de mezclas coincide, en ausencia de ruido y de efectos no lineales, con el número de especies absorbentes independientes (Malinowski, 2002). Ojo: el PCA recupera el **subespacio** correcto, pero los scores y cargas son una rotación de $\mathbf{C}$ y $\mathbf{S}_{\text{esp}}$, no los perfiles puros (para estos se usa MCR-ALS).
+
+## Preprocesamiento: centrado y escalado
+
+El PCA analiza **varianza**; por tanto, el resultado depende de cómo se preparen las variables.
+
+| Tratamiento | Operación sobre $x_{ij}$ | Cuándo usarlo |
+|---|---|---|
+| Centrado (obligatorio) | $x_{ij} - \bar{x}_j$ | Siempre; sin centrar, la CP1 apunta hacia la media y no hacia la variabilidad. |
+| Autoescalado (PCA sobre **correlaciones**) | $(x_{ij} - \bar{x}_j)/s_j$ | Variables con unidades o magnitudes distintas (mg/L, pH, %, °C). |
+| Escalado de Pareto | $(x_{ij} - \bar{x}_j)/\sqrt{s_j}$ | Metabolómica: reduce el dominio de señales grandes sin inflar tanto el ruido (van den Berg *et al.*, 2006). |
+| Solo centrado (PCA sobre **covarianzas**) | $x_{ij} - \bar{x}_j$ | Espectros (mismas unidades); el autoescalado amplificaría regiones de puro ruido. |
+| SNV (por fila) | $(x_{ij} - \bar{x}_i)/s_i$ | Espectros NIR con efectos de dispersión y desplazamientos multiplicativos (Barnes *et al.*, 1989). |
+| Derivadas (Savitzky–Golay) | $\mathrm{d}x/\mathrm{d}\lambda$ suavizada | Eliminar líneas base y resolver bandas solapadas (Savitzky y Golay, 1964). |
+| Transformación log-cociente (clr) | $\ln\!\big(x_{ij}/g(\mathbf{x}_i)\big)$ | Datos **composicionales** (porcentajes que suman 100 %) (Aitchison, 1986). |
+
+<div class="alerta">
+**Regla práctica.** El PCA con autoescalado equivale a diagonalizar la **matriz de correlación** $\mathbf{R}$; sin escalado, la **matriz de covarianzas** $\mathbf{S}$. Ambos análisis pueden dar conclusiones muy diferentes. En el Ejemplo 1 se verá que sin escalar, una sola variable (prolina, con varianza del orden de $10^5$) absorbe el 99,8 % de la varianza total.
+</div>
+
+## Cuántas componentes retener
+
+No existe un criterio único. Se recomienda **combinar** varios y, sobre todo, verificar la interpretabilidad química (Jolliffe, 2002; Jackson, 1993):
+
+* **Varianza acumulada:** retener las CP necesarias para alcanzar un umbral (70–90 %). Es arbitrario y depende del preprocesamiento.
+* **Criterio de Kaiser (1960):** con datos autoescalados, retener las CP con $\lambda_a > 1$ (es decir, que explican más que una variable original). Tiende a sobrestimar con muchas variables.
+* **Gráfico de sedimentación (*scree plot*, Cattell, 1966):** retener las CP antes del "codo".
+* **Modelo de la vara quebrada (*broken stick*):** retener la CP $a$ si su proporción de varianza supera la esperada al romper al azar una vara en $p$ trozos:
+$$
+b_a = \frac{1}{p}\sum_{k=a}^{p}\frac{1}{k}.
+$$
+Jackson (1993) lo encontró entre los criterios más fiables en simulaciones.
+* **Validación cruzada** (Wold, 1978): elegir $A$ que minimiza el error de predicción de elementos omitidos (PRESS). Debe implementarse con cuidado; la omisión ingenua de filas completas favorece siempre más componentes (Bro *et al.*, 2008).
+* **Diagnóstico de residuales:** cuando los residuales ya solo contienen ruido aleatorio (sin estructura espectral), se ha alcanzado el rango químico.
+
+## Interpretación: scores, loadings y biplot
+
+* **Scores** $t_{ia}$: coordenadas de la muestra $i$ en la CP $a$. El gráfico de scores (CP1 vs CP2) muestra agrupamientos, tendencias y muestras atípicas.
+* **Loadings** $p_{ja}$: coeficiente de la variable $j$ en la CP $a$ (coseno del ángulo entre el eje original y la nueva CP). Variables con cargas grandes y del mismo signo están correlacionadas positivamente en esa componente. En espectros, el vector de cargas se grafica contra la longitud de onda como un "pseudo-espectro".
+* **Correlación variable–componente** (con datos autoescalados): $r(\mathbf{x}_j, \mathbf{t}_a) = p_{ja}\sqrt{\lambda_a}$. Es la base del **círculo de correlaciones**.
+* **Contribución** de la variable $j$ a la CP $a$: $p_{ja}^2 \times 100\,\%$ (las contribuciones de una componente suman 100 %).
+* **Calidad de representación** ($\cos^2$) de una variable en el plano CP1–CP2: $r_{j1}^2 + r_{j2}^2$; cerca de 1 indica que la variable está bien representada en ese plano.
+* **Biplot** (Gabriel, 1971): superpone scores y loadings. Una muestra situada en la dirección de la flecha de una variable tiene valores altos de esa variable.
+
+<div class="caja">
+**Indeterminación de signo.** Si $\mathbf{p}_a$ es autovector, también lo es $-\mathbf{p}_a$. El signo de una componente es arbitrario y puede cambiar entre programas o versiones; solo importan los signos **relativos** entre cargas (y entre scores). En este tutorial se fija la convención de que la carga de mayor valor absoluto en cada CP sea positiva.
+</div>
+
+## Diagnóstico de muestras: $T^2$ de Hotelling y residual $Q$
+
+Un modelo PCA con $A$ componentes define dos distancias complementarias para cada muestra $i$ (Jackson, 1991; Wise y Gallagher, 1996):
+
+**1. $T^2$ de Hotelling** — distancia **dentro** del modelo (variación sistemática extrema, pero coherente con la estructura de correlación):
+
+$$
+T^2_i = \sum_{a=1}^{A}\frac{t_{ia}^2}{\lambda_a},
+\qquad
+T^2_{\lim} = \frac{A\,(n-1)}{n-A}\;F_{1-\alpha}(A,\; n-A).
+$$
+
+**2. Residual $Q$** (o SPE, *squared prediction error*) — distancia **fuera** del modelo (la muestra rompe la estructura de correlación: interferente, contaminación, error de medida):
+
+$$
+Q_i = \mathbf{e}_i^\top\mathbf{e}_i = \sum_{j=1}^{p}\big(x_{c,ij} - \hat{x}_{ij}\big)^2 .
+$$
+
+El límite de Jackson y Mudholkar (1979) usa los autovalores descartados, $\theta_k = \sum_{a=A+1}^{r}\lambda_a^{k}$ ($k = 1,2,3$), $h_0 = 1 - \frac{2\theta_1\theta_3}{3\theta_2^2}$ y el cuantil normal $z_{1-\alpha}$:
+
+$$
+Q_{\lim} = \theta_1\left[\frac{z_{1-\alpha}\sqrt{2\theta_2 h_0^2}}{\theta_1} + 1 + \frac{\theta_2 h_0(h_0 - 1)}{\theta_1^2}\right]^{1/h_0}.
+$$
+
+El gráfico $T^2$ vs $Q$ clasifica las muestras en cuatro cuadrantes: normales (ambos bajos), extremas pero bien modeladas ($T^2$ alto), mal modeladas ($Q$ alto) y anómalas en ambos sentidos. Para las muestras de calibración, la distribución exacta de $T^2$ es una Beta (Tracy *et al.*, 1992); la aproximación $F$ anterior es la que usan habitualmente los programas de quimiometría.
+
+Las siguientes funciones, escritas para este tutorial, se usarán en los ejemplos y el taller:
+
+```{r funciones}
+# Convención de signo: la carga de mayor |valor| de cada CP es positiva
+fijar_signo <- function(pca) {
+  s <- apply(pca$rotation, 2, function(v) sign(v[which.max(abs(v))]))
+  pca$rotation <- sweep(pca$rotation, 2, s, "*")
+  pca$x        <- sweep(pca$x,        2, s, "*")
+  pca
+}
+
+# Modelo de la vara quebrada (proporción esperada de varianza)
+vara_quebrada <- function(p) sapply(1:p, function(a) sum(1 / (a:p)) / p)
+
+# T2 de Hotelling y residual Q con sus límites (alfa = 0.05 por defecto)
+diagnostico_pca <- function(pca, A, alfa = 0.05) {
+  n   <- nrow(pca$x)
+  lam <- pca$sdev^2
+  Ta  <- pca$x[, 1:A, drop = FALSE]
+  T2  <- rowSums(sweep(Ta^2, 2, lam[1:A], "/"))
+  # Reconstrucción y residuales en el espacio preprocesado
+  Xp  <- pca$x %*% t(pca$rotation)             # datos preprocesados (todas las CP)
+  Xa  <- Ta %*% t(pca$rotation[, 1:A, drop = FALSE])
+  Q   <- rowSums((Xp - Xa)^2)
+  # Límites
+  T2lim <- A * (n - 1) / (n - A) * qf(1 - alfa, A, n - A)
+  r   <- lam[(A + 1):length(lam)]; r <- r[r > 1e-12 * max(lam)]
+  th  <- sapply(1:3, function(k) sum(r^k))
+  h0  <- 1 - 2 * th[1] * th[3] / (3 * th[2]^2)
+  z   <- qnorm(1 - alfa)
+  Qlim <- th[1] * (z * sqrt(2 * th[2] * h0^2) / th[1] + 1 +
+                   th[2] * h0 * (h0 - 1) / th[1]^2)^(1 / h0)
+  list(T2 = T2, Q = Q, T2lim = T2lim, Qlim = Qlim)
+}
+
+# Gráfico T2 vs Q
+grafico_T2Q <- function(d, etiquetas = NULL, grupo = NULL, titulo = "") {
+  df <- data.frame(T2 = d$T2, Q = d$Q,
+                   id = if (is.null(etiquetas)) seq_along(d$T2) else etiquetas,
+                   g  = if (is.null(grupo)) "muestra" else grupo)
+  df$fuera <- df$T2 > d$T2lim | df$Q > d$Qlim
+  ggplot(df, aes(T2, Q, colour = g)) +
+    geom_point(size = 2, show.legend = !is.null(grupo)) +
+    geom_vline(xintercept = d$T2lim, linetype = 2, colour = "red") +
+    geom_hline(yintercept = d$Qlim,  linetype = 2, colour = "red") +
+    geom_text_repel(data = subset(df, fuera), aes(label = id),
+                    size = 3, show.legend = FALSE, max.overlaps = 30) +
+    labs(x = expression(T^2~"de Hotelling"), y = "Residual Q (SPE)",
+         colour = NULL, title = titulo)
+}
+```
+
+---
+
+# Cuándo aplicar el PCA
+
+**Requisitos y condiciones favorables:**
+
+* Datos **tabulares cuantitativos** (variables continuas o, al menos, de intervalo) organizados como matriz muestras × variables.
+* **Correlación** entre variables. Si las variables son casi independientes, todas las CP tendrán varianzas parecidas y no habrá reducción de dimensión (puede comprobarse con la prueba de esfericidad de Bartlett o el índice KMO).
+* Relaciones aproximadamente **lineales** entre variables.
+* El PCA **no exige normalidad** para calcularse ni para su uso descriptivo; la normalidad multivariada solo se necesita para las pruebas inferenciales y los límites de confianza ($T^2$, $Q$).
+* Funciona con $p > n$ (espectros con cientos de longitudes de onda y pocas muestras), algo imposible para la regresión lineal múltiple clásica.
+
+**Aplicaciones químicas típicas:**
+
+| Ámbito | Uso del PCA | Ejemplo |
+|---|---|---|
+| Química de alimentos / autenticidad | Exploración y agrupamiento de muestras | Origen geográfico de vinos, aceites, mieles, café |
+| Espectroscopía (NIR, MIR, Raman, UV-Vis) | Compresión, filtrado de ruido, detección de anómalas | Control de materias primas en farmacia |
+| Análisis de mezclas | Estimación del número de especies (rango químico) | Equilibrios ácido-base, cinética seguida por UV-Vis |
+| Química ambiental | Identificación de fuentes de contaminación | Metales en sedimentos, iones en aguas |
+| Control de procesos (MSPC) | Gráficos de control $T^2$ y $Q$ | Reactores, fermentaciones, destilación |
+| Química computacional / QSAR | Reducción de descriptores moleculares colineales | Selección de descriptores para modelos de actividad |
+| Calibración multivariante | Paso previo de la regresión en componentes principales (PCR) | Predicción de octanaje a partir de NIR |
+| Química forense | Comparación de evidencias por composición elemental | Fragmentos de vidrio, tintas, residuos de disparo |
+
+---
+
+# Limitaciones y precauciones
+
+1. **Linealidad.** El PCA solo captura estructuras lineales. Relaciones curvas (efectos de saturación, desviaciones de Beer–Lambert a altas concentraciones, temperatura en NIR) generan componentes adicionales espurias. Alternativas: PCA de núcleo (*kernel PCA*), métodos de variedades.
+2. **Sensibilidad al escalado.** Los resultados cambian según el preprocesamiento; no hay un PCA "correcto" independiente de esa decisión. Debe justificarse químicamente.
+3. **Sensibilidad a valores atípicos.** La varianza y la covarianza no son robustas: una sola muestra extrema puede rotar la CP1 hacia sí. Alternativas: ROBPCA (Hubert *et al.*, 2005), implementado en `rrcov::PcaHubert()`.
+4. **Varianza ≠ relevancia.** La dirección de máxima varianza no es necesariamente la más informativa para el problema químico. En el Ejemplo 2, el octanaje se relaciona más con la CP4 (4,6 % de la varianza) que con la CP1 (72,6 %). Para predecir o clasificar se usan métodos **supervisados** (PLS, PLS-DA, LDA).
+5. **Método no supervisado.** El PCA no usa la información de clases; que aparezcan grupos en el gráfico de scores es un hallazgo, no una garantía. Su ausencia en CP1–CP2 no implica que las clases sean indistinguibles (pueden separarse en CP de menor varianza).
+6. **Interpretación de cargas.** Cada CP es combinación de **todas** las variables; con muchas variables las cargas son difíciles de interpretar. Alternativas: PCA disperso (Zou *et al.*, 2006), rotaciones (varimax, en análisis factorial).
+7. **Las CP no son especies químicas.** Por la ambigüedad rotacional, los loadings no son espectros puros ni los scores concentraciones. Para resolución de mezclas: MCR-ALS.
+8. **Datos composicionales.** Porcentajes que suman 100 % (óxidos en vidrios, ácidos grasos, fracciones molares) están sujetos al **efecto de cierre**: inducen correlaciones negativas espurias. Se recomienda la transformación log-cociente centrada (clr) antes del PCA (Aitchison, 1986).
+9. **Ruido heterocedástico.** El PCA supone implícitamente ruido de igual varianza en todas las variables. En espectros con ruido no uniforme puede usarse el PCA de máxima verosimilitud (MLPCA; Wentzell *et al.*, 1997).
+10. **Datos faltantes.** `prcomp()` no los admite. Deben imputarse con métodos iterativos acordes al PCA (p. ej., `missMDA::imputePCA`; Josse y Husson, 2016), no con la media de la columna sin más.
+11. **Representatividad.** El modelo solo describe la población muestreada; proyectar muestras de una población distinta produce valores de $Q$ elevados.
+12. **Sobreinterpretación.** Las CP de varianza muy pequeña suelen contener ruido. No deben interpretarse químicamente sin evidencia independiente.
+
+---
+
+# Flujo de trabajo en R
+
+| Función | Paquete | Algoritmo | Comentario |
+|---|---|---|---|
+| `prcomp(X, center = TRUE, scale. = TRUE)` | stats (base) | SVD | Recomendada; admite $p > n$. |
+| `princomp(X, cor = TRUE)` | stats (base) | autovectores de $\mathbf{S}$ (divisor $n$) | Requiere $n > p$. |
+| `PCA(X, scale.unit = TRUE)` | FactoMineR | SVD | Da contribuciones, $\cos^2$, individuos/variables suplementarios (Lê *et al.*, 2008). |
+| `fviz_*()` | factoextra | — | Visualización basada en ggplot2. |
+| `PcaHubert()` | rrcov | ROBPCA | PCA robusto frente a atípicos. |
+
+Secuencia recomendada: **(1)** inspección de datos y valores faltantes → **(2)** elección justificada del preprocesamiento → **(3)** cálculo del PCA → **(4)** elección del número de componentes → **(5)** diagnóstico $T^2$/$Q$ y revisión de anómalas → **(6)** interpretación química de scores y loadings → **(7)** validación (estabilidad ante la eliminación de muestras, proyección de muestras nuevas).
+
+---
+
+# Ejemplo 1 · Composición química de vinos italianos
+
+## Los datos
+
+Se analizan 178 vinos de tres cultivares de la misma región de Italia, en los que se midieron 13 constituyentes químicos (Forina *et al.*, PARVUS; datos disponibles en el repositorio UCI y en el paquete `gclus`). Las clases corresponden a los cultivares Barolo (1), Grignolino (2) y Barbera (3), según Aeberhard *et al.* (1994).
+
+```{r ej1-datos}
+data(wine, package = "gclus")
+vinos   <- wine[, -1]
+cultivar <- factor(wine$Class, labels = c("Barolo", "Grignolino", "Barbera"))
+dim(vinos)
+table(cultivar)
+```
+
+```{r ej1-resumen}
+resumen <- data.frame(
+  Media = sapply(vinos, mean),
+  DE    = sapply(vinos, sd),
+  Varianza = sapply(vinos, var),
+  CV_pct = 100 * sapply(vinos, sd) / sapply(vinos, mean)
+)
+knitr::kable(round(resumen, 3), caption = "Tabla 1. Estadísticos descriptivos de las 13 variables.")
+```
+
+Las varianzas abarcan más de seis órdenes de magnitud (de `r signif(min(resumen$Varianza), 2)` para *Nonflavanoid* hasta `r format(round(max(resumen$Varianza)), big.mark = " ")` para *Proline*). Las variables tienen además unidades distintas. **Ambos hechos exigen autoescalar** (PCA sobre la matriz de correlación).
+
+## Estructura de correlación
+
+```{r ej1-corr, fig.width=7, fig.height=6.5, fig.cap="Figura 2. Matriz de correlación de Pearson, ordenada por agrupamiento jerárquico."}
+R <- cor(vinos)
+corrplot(R, method = "ellipse", type = "upper", order = "hclust",
+         tl.col = "black", tl.cex = 0.85, addCoef.col = "grey20", number.cex = 0.6)
+```
+
+Se observan bloques de variables fuertemente correlacionadas: fenoles totales, flavonoides, proantocianidinas y la absorbancia OD280/OD315 (todas ligadas al contenido polifenólico) se correlacionan positivamente entre sí y negativamente con los fenoles no flavonoides y con la alcalinidad de las cenizas. Esta redundancia es la que el PCA aprovecha.
+
+## Cálculo del PCA y verificación "desde cero"
+
+```{r ej1-pca}
+pca_v <- prcomp(vinos, center = TRUE, scale. = TRUE)
+pca_v <- fijar_signo(pca_v)
+summary(pca_v)$importance[, 1:6]
+```
+
+Verificamos que `prcomp()` coincide con la teoría por las dos vías: autovectores de $\mathbf{R}$ y SVD de $\mathbf{Z}$ (datos autoescalados).
+
+```{r ej1-verificacion}
+Z <- scale(vinos)          # autoescalado
+n <- nrow(Z)
+
+# Vía 1: descomposición espectral de la matriz de correlación
+eig <- eigen(cor(vinos))
+# Vía 2: SVD de la matriz autoescalada
+sv  <- svd(Z)
+
+cbind(prcomp_lambda = pca_v$sdev[1:5]^2,
+      eigen_lambda  = eig$values[1:5],
+      svd_lambda    = sv$d[1:5]^2 / (n - 1))
+
+# Cargas: iguales salvo el signo
+all.equal(abs(unname(pca_v$rotation)), abs(eig$vectors))
+all.equal(abs(unname(pca_v$rotation)), abs(sv$v))
+
+# Scores: T = Z P = U Sigma
+all.equal(abs(unname(pca_v$x)), abs(Z %*% eig$vectors), check.attributes = FALSE)
+
+# Propiedades: P'P = I ; scores no correlacionados ; suma de autovalores = p
+round(crossprod(pca_v$rotation)[1:4, 1:4], 10)
+round(cov(pca_v$x)[1:4, 1:4], 6)
+sum(pca_v$sdev^2)   # traza de R = número de variables
+```
+
+## Número de componentes
+
+```{r ej1-ncomp, fig.cap="Figura 3. Gráfico de sedimentación con los criterios de Kaiser y de la vara quebrada."}
+lam  <- pca_v$sdev^2
+p    <- length(lam)
+crit <- data.frame(CP = 1:p, lambda = lam, prop = lam / sum(lam),
+                   acumulada = cumsum(lam) / sum(lam),
+                   vara = vara_quebrada(p))
+ggplot(crit, aes(CP)) +
+  geom_col(aes(y = prop), fill = "#18bc9c", alpha = 0.8) +
+  geom_line(aes(y = prop)) + geom_point(aes(y = prop)) +
+  geom_line(aes(y = vara), colour = "red", linetype = 2) +
+  geom_point(aes(y = vara), colour = "red", shape = 4, size = 3) +
+  geom_hline(yintercept = 1 / p, colour = "blue", linetype = 3) +
+  annotate("text", x = 11, y = 1 / p + 0.015, label = "Kaiser (λ = 1)", colour = "blue") +
+  annotate("text", x = 4.7, y = 0.21, label = "vara quebrada", colour = "red") +
+  scale_x_continuous(breaks = 1:p) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Proporción de varianza explicada", x = "Componente principal")
+knitr::kable(transform(round(crit, 3)), caption = "Tabla 2. Autovalores y criterios de selección.")
+```
+
+```{r ej1-ncomp-dec}
+c(Kaiser = sum(lam > 1),
+  vara_quebrada = which(crit$prop < crit$vara)[1] - 1,
+  var_80pct = which(crit$acumulada >= 0.80)[1])
+```
+
+Kaiser sugiere `r sum(lam > 1)` componentes, la vara quebrada `r which(crit$prop < crit$vara)[1] - 1` y el umbral del 80 % `r which(crit$acumulada >= 0.80)[1]`. Las dos primeras CP explican el `r round(100 * crit$acumulada[2], 1)` % de la varianza y, como se verá, contienen la información química más interpretable; retenemos **A = 3** para el diagnóstico y usamos el plano CP1–CP2 para la interpretación.
+
+## Interpretación de las cargas
+
+```{r ej1-cargas, fig.height=5, fig.cap="Figura 4. Cargas de las tres primeras componentes."}
+cargas <- data.frame(variable = rownames(pca_v$rotation), pca_v$rotation[, 1:3])
+cl <- reshape(cargas, direction = "long", varying = c("PC1", "PC2", "PC3"),
+              v.names = "carga", timevar = "CP", times = c("CP1", "CP2", "CP3"),
+              idvar = "variable")
+ggplot(cl, aes(x = reorder(variable, carga), y = carga, fill = carga > 0)) +
+  geom_col(show.legend = FALSE) + coord_flip() + facet_wrap(~ CP) +
+  scale_fill_manual(values = c("#e74c3c", "#2c3e50")) +
+  labs(x = NULL, y = "Carga (loading)")
+```
+
+```{r ej1-contrib, fig.width=10, fig.height=4, fig.cap="Figura 5. Contribución (%) de cada variable a CP1 y CP2. La línea roja marca la contribución media esperada (100/p)."}
+library(gridExtra)
+grid.arrange(fviz_contrib(pca_v, choice = "var", axes = 1, title = "CP1"),
+             fviz_contrib(pca_v, choice = "var", axes = 2, title = "CP2"), ncol = 2)
+```
+
+**Lectura química:**
+
+* **CP1 (`r round(100*crit$prop[1],1)` %)** — eje **polifenólico**. Cargas positivas altas para flavonoides, fenoles totales, OD280/OD315 y proantocianidinas; negativas para fenoles no flavonoides, alcalinidad de cenizas y ácido málico. Valores altos de CP1 corresponden a vinos ricos en flavonoides.
+* **CP2 (`r round(100*crit$prop[2],1)` %)** — eje de **intensidad de color, grado alcohólico y prolina**. Separa vinos con mayor intensidad de color, alcohol, prolina y magnesio, y se opone al matiz (*Hue*).
+* **CP3 (`r round(100*crit$prop[3],1)` %)** — dominada por **cenizas y su alcalinidad**: un eje de composición mineral, casi independiente de los anteriores.
+
+## Gráfico de scores y biplot
+
+```{r ej1-scores, fig.width=7.5, fig.height=5.5, fig.cap="Figura 6. Scores en el plano CP1–CP2 con elipses de confianza del 95 % por cultivar."}
+sc <- data.frame(pca_v$x[, 1:3], cultivar)
+ggplot(sc, aes(PC1, PC2, colour = cultivar)) +
+  geom_hline(yintercept = 0, colour = "grey70") + geom_vline(xintercept = 0, colour = "grey70") +
+  geom_point(size = 2, alpha = 0.8) +
+  stat_ellipse(level = 0.95, linewidth = 0.8) +
+  labs(x = sprintf("CP1 (%.1f %%)", 100 * crit$prop[1]),
+       y = sprintf("CP2 (%.1f %%)", 100 * crit$prop[2]), colour = "Cultivar") +
+  coord_equal()
+```
+
+```{r ej1-biplot, fig.width=8, fig.height=6.5, fig.cap="Figura 7. Biplot: scores (puntos) y cargas (flechas) en CP1–CP2."}
+fviz_pca_biplot(pca_v, geom.ind = "point", col.ind = cultivar, palette = "Dark2",
+                addEllipses = FALSE, col.var = "black", repel = TRUE,
+                pointsize = 1.8, labelsize = 3.5, legend.title = "Cultivar",
+                title = "")
+```
+
+```{r ej1-circulo, fig.width=6.5, fig.height=6.2, fig.cap="Figura 8. Círculo de correlaciones coloreado por la calidad de representación (cos²)."}
+fviz_pca_var(pca_v, col.var = "cos2", gradient.cols = c("#BDC3C7", "#18bc9c", "#2c3e50"),
+             repel = TRUE, title = "")
+```
+
+El plano CP1–CP2 separa casi por completo los tres cultivares **sin haber usado la información de clase**:
+
+* **Barolo**: CP1 alta y CP2 alta → ricos en flavonoides y fenoles, con alto contenido de alcohol y prolina.
+* **Barbera**: CP1 baja y CP2 alta → pobres en flavonoides, mayor intensidad de color, más ácido málico y menor matiz.
+* **Grignolino**: CP2 baja → menor alcohol, color y prolina; ocupa la región central en CP1 con mayor dispersión.
+
+## Diagnóstico de muestras anómalas
+
+```{r ej1-T2Q, fig.width=7.5, fig.height=5, fig.cap="Figura 9. Gráfico T² vs Q (A = 3, α = 0,05). Las líneas rojas son los límites de confianza."}
+d1 <- diagnostico_pca(pca_v, A = 3)
+c(T2lim = d1$T2lim, Qlim = d1$Qlim)
+grafico_T2Q(d1, etiquetas = rownames(vinos), grupo = cultivar)
+fuera <- which(d1$T2 > d1$T2lim | d1$Q > d1$Qlim)
+data.frame(muestra = fuera, cultivar = cultivar[fuera],
+           T2 = round(d1$T2[fuera], 2), Q = round(d1$Q[fuera], 2))
+```
+
+Con $\alpha = 0{,}05$ se espera que ~5 % de las muestras (≈ 9) superen cada límite aunque sean perfectamente normales; por eso estos gráficos señalan muestras a **revisar** (registro analítico, posible error de transcripción), no a eliminar automáticamente. Para identificar qué variable provoca un valor de $Q$ alto se examinan los residuales $e_{ij}$ de esa muestra (gráfico de contribuciones):
+
+```{r ej1-contrQ, fig.height=3.8, fig.cap="Figura 10. Contribuciones al residual Q de la muestra con mayor Q."}
+A <- 3
+Ehat <- scale(vinos) - pca_v$x[, 1:A] %*% t(pca_v$rotation[, 1:A])
+imax <- which.max(d1$Q)
+barplot(Ehat[imax, ]^2, las = 2, col = "#e67e22", cex.names = 0.75,
+        main = paste("Muestra", imax, "-", cultivar[imax]), ylab = expression(e[ij]^2))
+```
+
+## ¿Qué ocurre si no se escala?
+
+```{r ej1-sinescalar}
+pca_cov <- fijar_signo(prcomp(vinos, center = TRUE, scale. = FALSE))
+round(summary(pca_cov)$importance[, 1:3], 4)
+round(sort(abs(pca_cov$rotation[, 1]), decreasing = TRUE)[1:4], 4)
+```
+
+Sin escalar, la CP1 explica el `r round(100*summary(pca_cov)$importance[2,1], 2)` % de la varianza, pero esa CP1 es **prácticamente la variable prolina** (carga ≈ 1). El análisis no "descubre" nada: solo refleja que la prolina se expresa en mg/L con valores de cientos a más de mil. Este es el ejemplo clásico de la Limitación 2.
+
+## Proyección de muestras nuevas
+
+Un modelo PCA se usa para clasificar o controlar muestras futuras proyectándolas con **la media y desviación de la calibración**:
+
+```{r ej1-proyeccion}
+set.seed(1)
+idx <- sample(nrow(vinos), 140)
+modelo <- fijar_signo(prcomp(vinos[idx, ], scale. = TRUE))
+nuevas <- vinos[-idx, ]
+# predict() aplica internamente el centrado y escalado del modelo de calibración
+t_nuevas <- predict(modelo, newdata = nuevas)[, 1:2]
+# Equivalente explícito: T_nuevo = ((x - media_cal)/de_cal) P
+t_manual <- scale(nuevas, center = modelo$center, scale = modelo$scale) %*% modelo$rotation[, 1:2]
+all.equal(unname(t_nuevas), unname(t_manual))
+```
+
+---
+
+# Ejemplo 2 · Espectros NIR de gasolinas
+
+## Los datos
+
+El conjunto `gasoline` (Kalivas, 1997) contiene espectros de reflectancia difusa en el infrarrojo cercano, registrados como $\log(1/R)$ entre 900 y 1 700 nm cada 2 nm (**401 variables**), de **60 muestras** de gasolina, junto con su número de octano. Es un caso típico de $p \gg n$: imposible para la regresión clásica, natural para el PCA.
+
+```{r ej2-datos, fig.height=4.5, fig.cap="Figura 11. Espectros NIR de las 60 gasolinas, coloreados por número de octano."}
+library(pls)
+data(gasoline)
+NIR    <- unclass(gasoline$NIR)
+lambda <- as.numeric(gsub(" nm", "", colnames(NIR)))
+octano <- gasoline$octane
+dim(NIR); range(lambda); range(octano)
+
+espectros <- data.frame(lambda = rep(lambda, each = nrow(NIR)),
+                        absorb = as.vector(NIR),
+                        muestra = rep(1:nrow(NIR), times = ncol(NIR)),
+                        octano  = rep(octano, times = ncol(NIR)))
+ggplot(espectros, aes(lambda, absorb, group = muestra, colour = octano)) +
+  geom_line(linewidth = 0.35) +
+  scale_colour_viridis_c() +
+  labs(x = "Longitud de onda (nm)", y = "log(1/R)", colour = "Octano")
+```
+
+Las bandas visibles corresponden a sobretonos y combinaciones de vibraciones C–H: segundo sobretono hacia 1 150–1 230 nm, región de combinación hacia 1 350–1 450 nm y primer sobretono por encima de ~1 650 nm (Workman y Weyer, 2012). Se aprecian también pequeños **desplazamientos de línea base** entre muestras y una zona ruidosa por encima de ~1 680 nm, donde la absorbancia es alta y llega poca luz al detector.
+
+## Elección del preprocesamiento
+
+Todas las variables tienen las mismas unidades y las regiones de baja señal contienen principalmente ruido; **no se autoescala** (eso daría a la región de ruido el mismo peso que a las bandas). Se usa **solo centrado**. Como alternativa se evalúa el efecto de la corrección SNV.
+
+```{r ej2-pca}
+pca_g <- fijar_signo(prcomp(NIR, center = TRUE, scale. = FALSE))
+imp   <- summary(pca_g)$importance
+round(imp[, 1:8], 4)
+```
+
+## Número de componentes y error de reconstrucción
+
+```{r ej2-reconstruccion, fig.width=9, fig.height=4, fig.cap="Figura 12. Izquierda: varianza explicada (escala log). Derecha: error cuadrático medio de reconstrucción en función de A."}
+Xc  <- scale(NIR, center = TRUE, scale = FALSE)
+Amax <- 15
+rmse <- sapply(1:Amax, function(A) {
+  Xhat <- pca_g$x[, 1:A] %*% t(pca_g$rotation[, 1:A])
+  sqrt(mean((Xc - Xhat)^2))
+})
+lamg <- pca_g$sdev^2
+d_rec <- data.frame(A = 1:Amax, var = lamg[1:Amax] / sum(lamg), rmse = rmse)
+g1 <- ggplot(d_rec, aes(A, var)) + geom_line() + geom_point(colour = "#18bc9c", size = 2) +
+  scale_y_log10() + labs(y = "Proporción de varianza (log)", x = "CP")
+g2 <- ggplot(d_rec, aes(A, rmse)) + geom_line() + geom_point(colour = "#e74c3c", size = 2) +
+  labs(y = "RMSE de reconstrucción (log(1/R))", x = "Número de CP retenidas (A)")
+grid.arrange(g1, g2, ncol = 2)
+```
+
+Con `r which(cumsum(lamg)/sum(lamg) > 0.95)[1]` componentes se supera el 95 % de la varianza y el error de reconstrucción cae a `r signif(rmse[which(cumsum(lamg)/sum(lamg) > 0.95)[1]], 2)` unidades de $\log(1/R)$. Más allá de ~6–8 CP la curva se aplana: las componentes adicionales modelan principalmente ruido instrumental.
+
+## Cargas como pseudo-espectros
+
+```{r ej2-loadings, fig.height=5, fig.cap="Figura 13. Cargas de las cuatro primeras CP en función de la longitud de onda."}
+L <- data.frame(lambda = rep(lambda, 4),
+                carga  = as.vector(pca_g$rotation[, 1:4]),
+                CP = rep(sprintf("CP%d (%.1f %%)", 1:4, 100 * imp[2, 1:4]), each = length(lambda)))
+ggplot(L, aes(lambda, carga)) + geom_hline(yintercept = 0, colour = "grey60") +
+  geom_line(colour = "#2c3e50") + facet_wrap(~ CP, ncol = 2, scales = "free_y") +
+  labs(x = "Longitud de onda (nm)", y = "Carga")
+```
+
+* La **CP1** está dominada por el flanco de la banda intensa por encima de ~1 650 nm y por un rasgo de tipo "derivada" (máximo cerca de 1 140 nm y mínimo cerca de 1 200 nm) en la región del segundo sobretono C–H. Un patrón así indica cambios en la **proporción relativa de distintos tipos de enlace C–H** (las bandas de C–H aromático aparecen hacia 1 140 nm y las de CH₃/CH₂ alifático hacia 1 190–1 210 nm), aunque la asignación debe confirmarse con tablas de bandas NIR y no deducirse solo de las cargas.
+* La **CP2** tiene cargas casi constantes y positivas en todo el intervalo: es la firma de un **desplazamiento aditivo de línea base** (efecto físico, no químico), más una contribución de la zona ruidosa > 1 680 nm.
+* Las **CP3 y CP4** presentan estructura de bandas con cambios de signo en las tres regiones C–H, es decir, información química más fina.
+* Todas las cargas muestran oscilaciones por encima de ~1 680 nm: esa región aporta sobre todo ruido y es candidata a excluirse del modelo.
+
+## Scores y relación con el número de octano
+
+```{r ej2-scores, fig.width=9, fig.height=4.2, fig.cap="Figura 14. Scores coloreados por octanaje en los planos CP1–CP2 y CP3–CP4."}
+S <- data.frame(pca_g$x[, 1:4], octano)
+h1 <- ggplot(S, aes(PC1, PC2, colour = octano)) + geom_point(size = 2.3) +
+  scale_colour_viridis_c() + labs(x = "CP1", y = "CP2") + theme(legend.position = "none")
+h2 <- ggplot(S, aes(PC3, PC4, colour = octano)) + geom_point(size = 2.3) +
+  scale_colour_viridis_c() + labs(x = "CP3", y = "CP4", colour = "Octano")
+grid.arrange(h1, h2, ncol = 2, widths = c(1, 1.25))
+round(cor(pca_g$x[, 1:6], octano), 3)
+```
+
+Este resultado ilustra la **Limitación 4 (varianza ≠ relevancia)**: la CP1, que explica el `r round(100*imp[2,1],1)` % de la varianza, tiene una correlación solo moderada con el octanaje (r = `r round(cor(pca_g$x[,1], octano), 2)`), mientras que la CP4, con apenas el `r round(100*imp[2,4],1)` % de la varianza, es la más correlacionada (r = `r round(cor(pca_g$x[,4], octano), 2)`). Una regresión sobre las primeras componentes (PCR) necesitará incluir componentes "pequeñas"; la regresión PLS, que busca direcciones de máxima **covarianza** con la respuesta, suele resolverlo con menos factores.
+
+## Efecto de la corrección SNV
+
+```{r ej2-snv, fig.width=9, fig.height=4, fig.cap="Figura 15. Espectros tras SNV (izquierda) y varianza explicada antes y después (derecha)."}
+snv <- function(X) t(apply(X, 1, function(x) (x - mean(x)) / sd(x)))
+NIR_snv <- snv(NIR)
+pca_snv <- fijar_signo(prcomp(NIR_snv, center = TRUE, scale. = FALSE))
+e_snv <- data.frame(lambda = rep(lambda, each = nrow(NIR_snv)), y = as.vector(NIR_snv),
+                    m = rep(1:nrow(NIR_snv), ncol(NIR_snv)))
+k1 <- ggplot(e_snv, aes(lambda, y, group = m)) + geom_line(linewidth = 0.3, alpha = 0.6) +
+  labs(x = "Longitud de onda (nm)", y = "SNV")
+cmp <- data.frame(CP = rep(1:8, 2),
+                  prop = c(summary(pca_g)$importance[2, 1:8], summary(pca_snv)$importance[2, 1:8]),
+                  prep = rep(c("Centrado", "SNV + centrado"), each = 8))
+k2 <- ggplot(cmp, aes(factor(CP), prop, fill = prep)) + geom_col(position = "dodge") +
+  scale_y_continuous(labels = scales::percent) + labs(x = "CP", y = "Varianza explicada", fill = NULL)
+grid.arrange(k1, k2, ncol = 2)
+round(cor(pca_snv$x[, 1:4], octano), 3)
+```
+
+SNV elimina gran parte de la variación de línea base; la varianza se redistribuye y la componente más relacionada con el octanaje se desplaza hacia las primeras posiciones. **El preprocesamiento cambia el modelo**: debe elegirse con criterio químico-físico y validarse.
+
+## Diagnóstico $T^2$–$Q$
+
+```{r ej2-T2Q, fig.width=7.5, fig.height=5, fig.cap="Figura 16. Diagnóstico de los espectros (A = 4, solo centrado)."}
+d2 <- diagnostico_pca(pca_g, A = 4)
+grafico_T2Q(d2, etiquetas = 1:nrow(NIR), titulo = "Gasolinas NIR")
+which(d2$T2 > d2$T2lim | d2$Q > d2$Qlim)
+```
+
+En control de calidad de combustibles, una muestra nueva con $Q$ fuera de límite indicaría un espectro con una característica no presente en la calibración (aditivo, contaminación, fallo del instrumento), y su predicción de octanaje no debería aceptarse.
+
+---
+
+# Taller: problemas propuestos
+
+**Instrucciones generales.** Resuelva cada problema en un documento R Markdown propio, que compile sin errores a HTML. Toda decisión (preprocesamiento, número de componentes, tratamiento de anómalas) debe justificarse por escrito con argumentos estadísticos **y** químicos. Use las funciones `fijar_signo()`, `vara_quebrada()`, `diagnostico_pca()` y `grafico_T2Q()` definidas en la Sección 2.9. Entregue el `.Rmd` y el `.html`.
+
+<div class="problema">
+## Problema 1 · PCA paso a paso (cálculo manual)
+
+**Datos.** Subconjunto del conjunto de vinos del Ejemplo 1: las tres primeras muestras de cada cultivar y tres variables.
+
+```{r p1-datos}
+sel <- c(1:3, 60:62, 131:133)
+P1  <- wine[sel, c("Alcohol", "Flavanoids", "Intensity")]
+P1$Cultivar <- cultivar[sel]
+P1
+```
+
+**Tareas.**
+
+a) Calcule a mano (o con operaciones matriciales elementales, **sin** `prcomp`, `eigen` ni `svd`) el vector de medias, las desviaciones estándar y la matriz autoescalada $\mathbf{Z}$ ($9 \times 3$).
+b) Obtenga la matriz de correlación $\mathbf{R} = \mathbf{Z}^\top\mathbf{Z}/(n-1)$.
+c) Plantee el polinomio característico $\det(\mathbf{R} - \lambda\mathbf{I}) = 0$, que para $3 \times 3$ es $-\lambda^3 + \operatorname{tr}(\mathbf{R})\lambda^2 - c_2\lambda + \det(\mathbf{R}) = 0$, donde $c_2$ es la suma de los menores principales de orden 2. Resuélvalo con `polyroot()`.
+d) Para cada autovalor, obtenga el autovector resolviendo $(\mathbf{R} - \lambda\mathbf{I})\mathbf{p} = \mathbf{0}$ y normalícelo.
+e) Calcule los scores $\mathbf{T} = \mathbf{Z}\mathbf{P}$, verifique que $\mathbf{P}^\top\mathbf{P} = \mathbf{I}$, que los scores no están correlacionados y que $\sum\lambda_a = 3$.
+f) Compare todos sus resultados con `prcomp(P1[,1:3], scale. = TRUE)` y explique las diferencias de signo.
+g) Reconstruya $\mathbf{Z}$ con dos componentes y calcule $\lVert \mathbf{Z} - \hat{\mathbf{Z}}_2 \rVert_F^2$. Demuestre numéricamente que es igual a $(n-1)\lambda_3$ (teorema de Eckart–Young).
+h) Grafique los scores CP1–CP2 con el cultivar. ¿Qué variable domina cada componente?
+</div>
+
+<div class="problema">
+## Problema 2 · Química forense: composición de vidrios y datos composicionales
+
+**Datos.** `MASS::fgl`: 214 fragmentos de vidrio con índice de refracción codificado (`RI`; según la documentación de `MASS`, el valor real es 1,518xxxx) y porcentaje en masa de 8 óxidos (Na, Mg, Al, Si, K, Ca, Ba, Fe), clasificados en 6 tipos (ventanas flotadas y no flotadas de edificios y vehículos, recipientes, vajilla y faros) (datos recopilados por B. German; Evett y Spiehler, 1987; distribuidos en Venables y Ripley, 2002).
+
+```{r p2-datos, eval=FALSE}
+data(fgl, package = "MASS")
+str(fgl)
+```
+
+**Tareas.**
+
+a) Verifique que la suma de los óxidos es cercana a 100 % para cada muestra. ¿Qué implicación tiene esto (efecto de cierre) sobre la matriz de correlación?
+b) Realice un PCA autoescalado con las 9 variables. Determine el número de componentes con al menos dos criterios.
+c) Interprete químicamente CP1 y CP2 (piense en el papel del Si como formador de red, Na y Ca como modificadores, Mg en vidrios flotados, Ba en vidrios de faros).
+d) Grafique los scores coloreados por `type`. ¿Qué tipos de vidrio se separan y cuáles se solapan?
+e) Repita el análisis sobre los 8 óxidos tras aplicar la transformación log-cociente centrada (clr), sustituyendo los ceros por un valor pequeño (p. ej., 0,005 %) y justifique ese valor. Compare los resultados con el inciso (b).
+f) Construya el gráfico $T^2$–$Q$. Identifique las muestras anómalas e investigue su composición. ¿Son errores o vidrios con composición genuinamente distinta?
+g) Compare con un PCA robusto (`rrcov::PcaHubert(..., scale = TRUE)`) y comente cómo cambian las cargas.
+</div>
+
+<div class="problema">
+## Problema 3 · Autenticidad de aceites de oliva por perfil de ácidos grasos
+
+**Datos.** `dslabs::olive`: 572 aceites de oliva de 9 áreas en 3 regiones de Italia, con el porcentaje (×100 en el original; aquí en %) de 8 ácidos grasos (Forina *et al.*, 1983).
+
+```{r p3-datos, eval=FALSE}
+data(olive, package = "dslabs")
+head(olive)
+```
+
+**Tareas.**
+
+a) Describa la distribución de cada ácido graso por región (diagramas de caja). ¿Cuál parece más discriminante?
+b) Compare el PCA sobre covarianzas y sobre correlaciones. ¿Qué ácido graso domina el análisis no escalado y por qué?
+c) Con el PCA autoescalado, elabore el biplot coloreado por `region` y luego por `area`. Interprete las cargas en función de la saturación de los ácidos grasos (palmítico, esteárico, araquídico; oleico, palmitoleico, eicosenoico; linoleico, linolénico).
+d) El ácido eicosenoico está prácticamente ausente en ciertos aceites. ¿En qué región? ¿Cómo se refleja en el biplot?
+e) Ajuste un análisis discriminante lineal (`MASS::lda`) con `region` como respuesta y compare el gráfico de las funciones discriminantes con el gráfico de scores del PCA. Explique la diferencia entre un método supervisado y uno no supervisado.
+f) Discuta si estos datos son composicionales y qué consecuencias tiene para el PCA.
+</div>
+
+<div class="problema">
+## Problema 4 · Control de calidad de fibras PET por espectroscopía NIR
+
+**Datos.** `pls::yarn`: 28 espectros NIR (268 variables) de hilos de poli(tereftalato de etileno), con su densidad y un indicador `train` de pertenencia al conjunto de calibración (Swierenga *et al.*, 1999).
+
+```{r p4-datos, eval=FALSE}
+data(yarn, package = "pls")
+NIRy <- unclass(yarn$NIR); dens <- yarn$density; train <- yarn$train
+```
+
+**Tareas.**
+
+a) Grafique los espectros coloreados por densidad. Describa las diferencias de línea base.
+b) Calcule el PCA (solo centrado) con las muestras de calibración. Justifique por qué no autoescalar.
+c) Aplique (i) SNV y (ii) primera derivada (puede usar `diff()` de la matriz por filas, o un filtro de Savitzky–Golay con `signal::sgolayfilt`). Para cada preprocesamiento, compare la varianza explicada y la correlación de las primeras CP con la densidad.
+d) Elija un número de componentes y construya el gráfico $T^2$–$Q$ de la calibración con el mejor preprocesamiento.
+e) Proyecte las muestras de validación (`train == FALSE`) en el modelo usando `predict()`. Calcule sus $T^2$ y $Q$ **con los parámetros del modelo de calibración** (adapte `diagnostico_pca()` para recibir scores nuevos) y decida si pertenecen a la misma población.
+f) Grafique las cargas de la CP más correlacionada con la densidad y relacione las regiones de mayor carga con vibraciones de sobretono C–H del PET.
+</div>
+
+<div class="problema">
+## Problema 5 · Rango químico de mezclas simuladas (Beer–Lambert)
+
+**Datos.** Simulación de espectros UV-Vis de mezclas de tres especies absorbentes que siguen la ley de Beer–Lambert, $\mathbf{X} = \mathbf{C}\mathbf{S}^\top + \mathbf{E}$.
+
+```{r p5-datos, eval=FALSE}
+set.seed(123)
+lam <- seq(220, 420, by = 1)                         # nm
+banda <- function(mu, sig, h) h * exp(-0.5 * ((lam - mu) / sig)^2)
+S <- cbind(A = banda(260, 15, 1.0) + banda(330, 20, 0.3),
+           B = banda(290, 18, 0.8),
+           C = banda(350, 25, 0.6) + banda(250, 10, 0.2))   # espectros puros (absortividades)
+n  <- 40
+C  <- matrix(runif(n * 3, 0.1, 1.0), n, 3)             # concentraciones (u.a.)
+ruido <- 0.002
+X  <- C %*% t(S) + matrix(rnorm(n * length(lam), 0, ruido), n)
+```
+
+**Tareas.**
+
+a) Grafique los espectros puros y las mezclas. Calcule el PCA (solo centrado) y determine el número de especies a partir de los autovalores (escala logarítmica), del error de reconstrucción y de la inspección visual de las cargas y residuales.
+b) Repita para niveles de ruido de 0,0005; 0,005; 0,02 y 0,05. ¿A partir de qué nivel deja de identificarse correctamente el número de especies? Relacione su respuesta con la relación señal/ruido de la especie más débil.
+c) Añada a cada espectro una línea base lineal aleatoria ($a_i + b_i\lambda$). ¿Cuántas componentes "aparecen" ahora? Explique por qué y proponga un preprocesamiento que lo corrija.
+d) Imponga la **restricción de cierre** $c_{A}+c_{B}+c_{C} = 1$ para todas las mezclas (p. ej., `C <- C / rowSums(C)`). Repita (a). ¿Por qué el PCA centrado detecta ahora una componente menos? (Pista: el centrado elimina la dirección de la media).
+e) Introduzca una **no linealidad** (p. ej., $\mathbf{X}_{nl} = \mathbf{X} - 0{,}15\,\mathbf{X}^2$, simulando desviación de Beer–Lambert) y repita (a). Discuta qué limitación del PCA se pone en evidencia.
+f) Demuestre que las cargas de las primeras tres CP **no** son los espectros puros, pero que estos pertenecen al subespacio generado por las cargas (proyecte cada espectro puro centrado sobre ese subespacio y calcule el residual relativo).
+</div>
+
+## Criterios de evaluación sugeridos
+
+| Criterio | Peso |
+|---|---|
+| Corrección de los cálculos y del código (compila y es reproducible) | 30 % |
+| Justificación del preprocesamiento y del número de componentes | 20 % |
+| Interpretación química de scores y cargas | 25 % |
+| Diagnóstico de anómalas y discusión de limitaciones | 15 % |
+| Calidad de gráficos, redacción y citación | 10 % |
+
+---
+
+# Referencias
+
+* Aeberhard, S., Coomans, D. y de Vel, O. (1994). Comparative analysis of statistical pattern recognition methods in high dimensional settings. *Pattern Recognition*, 27(8), 1065–1077.
+* Aitchison, J. (1986). *The Statistical Analysis of Compositional Data*. Chapman & Hall, Londres.
+* Barnes, R. J., Dhanoa, M. S. y Lister, S. J. (1989). Standard normal variate transformation and de-trending of near-infrared diffuse reflectance spectra. *Applied Spectroscopy*, 43(5), 772–777.
+* Bro, R. y Smilde, A. K. (2014). Principal component analysis. *Analytical Methods*, 6(9), 2812–2831.
+* Bro, R., Kjeldahl, K., Smilde, A. K. y Kiers, H. A. L. (2008). Cross-validation of component models: a critical look at current methods. *Analytical and Bioanalytical Chemistry*, 390(5), 1241–1251.
+* Cattell, R. B. (1966). The scree test for the number of factors. *Multivariate Behavioral Research*, 1(2), 245–276.
+* Eckart, C. y Young, G. (1936). The approximation of one matrix by another of lower rank. *Psychometrika*, 1(3), 211–218.
+* Evett, I. W. y Spiehler, E. J. (1987). Rule induction in forensic science. Central Research Establishment, Home Office Forensic Science Service, Aldermaston, Reino Unido.
+* Forina, M., Armanino, C., Lanteri, S. y Tiscornia, E. (1983). Classification of olive oils from their fatty acid composition. En H. Martens y H. Russwurm (eds.), *Food Research and Data Analysis* (pp. 189–214). Applied Science Publishers, Londres.
+* Forina, M. *et al.* PARVUS — An extendible package for data exploration, classification and correlation. Institute of Pharmaceutical and Food Analysis and Technologies, Génova, Italia. (Datos *Wine*, repositorio UCI de aprendizaje automático.)
+* Gabriel, K. R. (1971). The biplot graphic display of matrices with application to principal component analysis. *Biometrika*, 58(3), 453–467.
+* Hotelling, H. (1933). Analysis of a complex of statistical variables into principal components. *Journal of Educational Psychology*, 24(6), 417–441; 24(7), 498–520.
+* Hubert, M., Rousseeuw, P. J. y Vanden Branden, K. (2005). ROBPCA: A new approach to robust principal component analysis. *Technometrics*, 47(1), 64–79.
+* Jackson, D. A. (1993). Stopping rules in principal components analysis: a comparison of heuristical and statistical approaches. *Ecology*, 74(8), 2204–2214.
+* Jackson, J. E. (1991). *A User's Guide to Principal Components*. Wiley, Nueva York.
+* Jackson, J. E. y Mudholkar, G. S. (1979). Control procedures for residuals associated with principal component analysis. *Technometrics*, 21(3), 341–349.
+* Jolliffe, I. T. (2002). *Principal Component Analysis* (2.ª ed.). Springer, Nueva York.
+* Jolliffe, I. T. y Cadima, J. (2016). Principal component analysis: a review and recent developments. *Philosophical Transactions of the Royal Society A*, 374(2065), 20150202.
+* Josse, J. y Husson, F. (2016). missMDA: A package for handling missing values in multivariate data analysis. *Journal of Statistical Software*, 70(1), 1–31.
+* Kaiser, H. F. (1960). The application of electronic computers to factor analysis. *Educational and Psychological Measurement*, 20(1), 141–151.
+* Kalivas, J. H. (1997). Two data sets of near infrared spectra. *Chemometrics and Intelligent Laboratory Systems*, 37(2), 255–259.
+* Lê, S., Josse, J. y Husson, F. (2008). FactoMineR: An R package for multivariate analysis. *Journal of Statistical Software*, 25(1), 1–18.
+* Malinowski, E. R. (2002). *Factor Analysis in Chemistry* (3.ª ed.). Wiley, Nueva York.
+* Pearson, K. (1901). On lines and planes of closest fit to systems of points in space. *The London, Edinburgh, and Dublin Philosophical Magazine and Journal of Science*, 2(11), 559–572.
+* Savitzky, A. y Golay, M. J. E. (1964). Smoothing and differentiation of data by simplified least squares procedures. *Analytical Chemistry*, 36(8), 1627–1639.
+* Swierenga, H., de Weijer, A. P., van Wijk, R. J. y Buydens, L. M. C. (1999). Strategy for constructing robust multivariate calibration models. *Chemometrics and Intelligent Laboratory Systems*, 49(1), 1–17.
+* Tracy, N. D., Young, J. C. y Mason, R. L. (1992). Multivariate control charts for individual observations. *Journal of Quality Technology*, 24(2), 88–95.
+* van den Berg, R. A., Hoefsloot, H. C. J., Westerhuis, J. A., Smilde, A. K. y van der Werf, M. J. (2006). Centering, scaling, and transformations: improving the biological information content of metabolomics data. *BMC Genomics*, 7, 142.
+* Venables, W. N. y Ripley, B. D. (2002). *Modern Applied Statistics with S* (4.ª ed.). Springer, Nueva York.
+* Wentzell, P. D., Andrews, D. T., Hamilton, D. C., Faber, K. y Kowalski, B. R. (1997). Maximum likelihood principal component analysis. *Journal of Chemometrics*, 11(4), 339–366.
+* Wise, B. M. y Gallagher, N. B. (1996). The process chemometrics approach to process monitoring and fault detection. *Journal of Process Control*, 6(6), 329–348.
+* Workman, J. y Weyer, L. (2012). *Practical Guide and Spectral Atlas for Interpretive Near-Infrared Spectroscopy* (2.ª ed.). CRC Press, Boca Raton.
+* Wold, S. (1978). Cross-validatory estimation of the number of components in factor and principal components models. *Technometrics*, 20(4), 397–405.
+* Wold, S., Esbensen, K. y Geladi, P. (1987). Principal component analysis. *Chemometrics and Intelligent Laboratory Systems*, 2(1–3), 37–52.
+* Zou, H., Hastie, T. y Tibshirani, R. (2006). Sparse principal component analysis. *Journal of Computational and Graphical Statistics*, 15(2), 265–286.
+
+---
+
+# Anexo: entorno de ejecución
+
+```{r session}
+sessionInfo()
+```
